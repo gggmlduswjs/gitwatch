@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gitwatch</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mute:#777; --line:#e5e5e5; --warn:#b45309; --bad:#b91c1c; --ok:#15803d; --hi:#fff7e6; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#e6e6e6; --mute:#8a8a8a; --line:#2a2a2a; --warn:#f59e0b; --bad:#f87171; --ok:#4ade80; --hi:#2a2210; } }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, "Malgun Gothic", sans-serif; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  h1 { font-size:16px; margin:0; }
+  .mute { color:var(--mute); }
+  input, select { font:inherit; padding:4px 6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; }
+  table { border-collapse:collapse; width:100%; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.subj { white-space:normal; max-width:520px; }
+  th { position:sticky; top:0; background:var(--bg); cursor:pointer; }
+  tr.dirty td { background:var(--hi); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .warn { color:var(--warn); } .bad { color:var(--bad); } .ok { color:var(--ok); }
+  h2 { font-size:14px; margin:18px 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>gitwatch</h1>
+  <span class="mute" id="meta">불러오는 중…</span>
+  <input id="q" placeholder="이름·브랜치 찾기">
+  <select id="show">
+    <option value="active">활동 있는 것만 (변경 있음 · 앞섬 · 7일 안)</option>
+    <option value="all">전체</option>
+  </select>
+</header>
+<div id="out"></div>
+<script>
+const ago = t => { if (!t) return '—'; const m = (Date.now() - t) / 60000;
+  return m < 60 ? `${Math.round(m)}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`; };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+// 숫자 / 0 / 조회 실패를 구분한다 — null 은 「조회 실패」, 0 은 0.
+const n = v => v == null ? '<span class="bad">조회 실패</span>' : v;
+let sortKey = 'lastCommit', data = null;
+
+function active(w) { return w.error || w.dirty > 0 || w.ahead > 0 || (w.lastCommit && Date.now() - w.lastCommit < 7 * 864e5); }
+
+function render() {
+  if (!data) return;
+  const q = document.getElementById('q').value.toLowerCase(), all = document.getElementById('show').value === 'all';
+  document.getElementById('meta').textContent = `기준 ${data.base} · ${new Date(data.at).toLocaleTimeString('ko-KR')} 갱신`;
+  document.getElementById('out').innerHTML = data.repos.map(r => {
+    if (r.error) return `<h2>${esc(r.repo)}</h2><p class="bad">조회 실패: ${esc(r.error)}</p>`;
+    const rows = r.worktrees.filter(w => (all || active(w)) && (!q || (w.path + ' ' + w.branch).toLowerCase().includes(q)))
+      .sort((a, b) => sortKey === 'name' ? a.path.localeCompare(b.path) : (b[sortKey] ?? -1) - (a[sortKey] ?? -1));
+    return `<h2>${esc(r.repo)} <span class="mute">${rows.length} / ${r.worktrees.length}</span></h2>
+      <table><tr><th data-k="name">worktree</th><th>브랜치</th><th data-k="dirty" class="num">변경</th><th data-k="ahead" class="num">앞섬</th><th data-k="behind" class="num">뒤짐</th><th data-k="lastCommit">마지막 커밋</th><th>메시지</th></tr>
+      ${rows.map(w => w.error
+        ? `<tr><td>${esc(w.path.split(/[\\/]/).pop())}</td><td>${esc(w.branch)}</td><td colspan="5" class="bad">조회 실패: ${esc(w.error)}</td></tr>`
+        : `<tr class="${w.dirty ? 'dirty' : ''}" title="${esc(w.path)}"><td>${esc(w.path.split(/[\\/]/).pop())}</td><td>${esc(w.branch ?? '(detached)')}</td>
+           <td class="num ${w.dirty ? 'warn' : ''}">${w.dirty}</td><td class="num ${w.ahead ? 'ok' : ''}">${n(w.ahead)}</td>
+           <td class="num ${w.behind > 50 ? 'warn' : ''}">${n(w.behind)}</td><td>${ago(w.lastCommit)}</td><td class="subj">${esc(w.subject)}</td></tr>`).join('')}
+      </table>`;
+  }).join('');
+  document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { sortKey = th.dataset.k; render(); });
+}
+
+async function load() {
+  try { data = await (await fetch('/api/state')).json(); render(); }
+  catch (e) { document.getElementById('meta').innerHTML = `<span class="bad">서버 연결 끊김</span>`; }
+}
+document.getElementById('q').oninput = render;
+document.getElementById('show').onchange = render;
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>
