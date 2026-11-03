@@ -5,71 +5,95 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>gitwatch</title>
 <style>
-  :root { --bg:#fff; --fg:#1a1a1a; --mute:#777; --line:#e5e5e5; --warn:#b45309; --bad:#b91c1c; --ok:#15803d; --hi:#fff7e6; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#e6e6e6; --mute:#8a8a8a; --line:#2a2a2a; --warn:#f59e0b; --bad:#f87171; --ok:#4ade80; --hi:#2a2210; } }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:13px/1.4 system-ui, "Malgun Gothic", sans-serif; }
-  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
-  h1 { font-size:16px; margin:0; }
-  .mute { color:var(--mute); }
-  input, select { font:inherit; padding:4px 6px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:4px; }
-  table { border-collapse:collapse; width:100%; }
-  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
-  td.subj { white-space:normal; max-width:520px; }
-  th { position:sticky; top:0; background:var(--bg); cursor:pointer; }
+  :root { --bg:#f5f6f8; --panel:#fff; --fg:#202938; --mute:#727b89; --line:#e5e8ee; --warn:#9a6209; --bad:#b42318; --ok:#247044; --hi:#fffbf2; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#15171b; --panel:#1d2026; --fg:#e6e6e6; --mute:#9da5b2; --line:#323741; --warn:#efbd60; --bad:#ff9189; --ok:#74d39a; --hi:#2a251a; } }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:28px; background:var(--bg); color:var(--fg); font:13px/1.5 system-ui,"Malgun Gothic",sans-serif; }
+  header, main { max-width:1440px; margin:auto; }
+  header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:24px; }
+  h1 { font-size:20px; margin:0 8px 0 0; letter-spacing:-.5px; }
+  .mute, small { color:var(--mute); }
+  input, select { font:inherit; padding:8px 10px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:7px; }
+  #q { margin-left:auto; width:220px; }
+  .project { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:22px; margin-bottom:24px; }
+  h2 { font-size:18px; margin:0; }
+  .project-head { display:flex; align-items:baseline; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
+  .table-wrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; table-layout:fixed; min-width:750px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mute); font-size:12px; font-weight:500; }
+  th[data-k] { cursor:pointer; }
+  td small { display:block; margin-top:3px; }
+  .clip { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .task { overflow-wrap:anywhere; }
   tr.dirty td { background:var(--hi); }
-  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .warn { color:var(--warn); } .bad { color:var(--bad); } .ok { color:var(--ok); }
-  h2 { font-size:14px; margin:18px 0 6px; }
+  summary { cursor:pointer; }
+  .details { font-size:12px; }
+  .details[open] { min-width:120px; }
+  .details div { overflow-wrap:anywhere; margin:8px 0; }
+  .empty { color:var(--mute); padding:12px 0; }
+  @media (max-width:700px) { body { padding:12px; } .project { padding:14px; } #q { margin-left:0; } }
 </style>
 </head>
 <body>
 <header>
   <h1>gitwatch</h1>
   <span class="mute" id="meta">불러오는 중…</span>
-  <input id="q" placeholder="이름·브랜치 찾기">
-  <select id="show">
-    <option value="active">활동 있는 것만 (변경 있음 · 앞섬 · 7일 안)</option>
-    <option value="all">전체</option>
+  <input id="q" aria-label="영역·작업·브랜치 검색" placeholder="영역·작업·브랜치 검색">
+  <select id="show" aria-label="표시 범위">
+    <option value="all">전체 공간</option>
+    <option value="active">최근 변경 있는 공간</option>
   </select>
 </header>
-<div id="out"></div>
+<main id="out"></main>
 <script>
 const ago = t => { if (!t) return '—'; const m = (Date.now() - t) / 60000;
   return m < 60 ? `${Math.round(m)}분 전` : m < 1440 ? `${Math.round(m / 60)}시간 전` : `${Math.round(m / 1440)}일 전`; };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
-// 숫자 / 0 / 조회 실패를 구분한다 — null 은 「조회 실패」, 0 은 0.
 const n = v => v == null ? '<span class="bad">조회 실패</span>' : v;
+const status = s => ({ running:'작업 중', ready_for_review:'검토 대기', approved:'승인됨', integrated:'통합됨', changes_requested:'수정 요청', failed:'실패', abandoned:'중단' })[s] || s;
 let sortKey = 'lastCommit', data = null;
-
-function active(w) { return w.error || w.dirty > 0 || w.ahead > 0 || (w.lastCommit && Date.now() - w.lastCommit < 7 * 864e5); }
-
+const expanded = new Set();
+function active(w) { return w.error || w.metadataError || w.dirty > 0 || w.ahead > 0 || (w.lastCommit && Date.now() - w.lastCommit < 7 * 864e5); }
+function table(rows) {
+  if (!rows.length) return '<p class="empty">표시할 작업공간이 없습니다.</p>';
+  return `<div class="table-wrap"><table><colgroup><col style="width:18%"><col style="width:35%"><col style="width:9%"><col style="width:12%"><col style="width:12%"><col style="width:14%"></colgroup>
+    <thead><tr><th data-k="name">작업공간</th><th>작업 · 브랜치</th><th data-k="dirty" class="num">변경 파일</th><th data-k="ahead" class="num">앞섬 / 뒤짐</th><th data-k="lastCommit">최근 커밋</th><th>상세</th></tr></thead><tbody>
+    ${rows.map(w => `<tr class="${w.dirty ? 'dirty' : ''}"><td><strong>${esc(w.displayName)}</strong><small class="${w.metadataError ? 'bad' : ''}">${esc(w.metadataError || status(w.workflowStatus) || (w.area ? '작업 미등록' : w.kind === '기준 작업공간' ? '관리 · 통합' : '영역 미등록'))}</small></td>
+      ${w.error ? `<td colspan="5" class="bad">조회 실패: ${esc(w.error)}</td>` : `<td class="task">${w.task ? `${w.issue ? '#' + esc(w.issue) + ' · ' : ''}${esc(w.task)}<small class="clip" title="${esc(w.branch)}">${esc(w.branch || '브랜치 없음 · detached')}</small>` : `<span class="clip" title="${esc(w.branch)}">${esc(w.branch || '브랜치 없음 · detached')}</span>`}</td>
+      <td class="num ${w.dirty ? 'warn' : ''}">${n(w.dirty)}</td><td class="num">${n(w.ahead)} / ${n(w.behind)}</td><td>${ago(w.lastCommit)}</td>
+      <td><details class="details" data-detail="${esc(w.path)}" ${expanded.has(w.path) ? 'open' : ''}><summary>경로·커밋</summary><div>${esc(w.path)}</div><div>${esc(w.head?.slice(0,7))} · ${esc(w.subject || '—')}</div></details></td>`}</tr>`).join('')}
+    </tbody></table></div>`;
+}
 function render() {
   if (!data) return;
   const q = document.getElementById('q').value.toLowerCase(), all = document.getElementById('show').value === 'all';
-  document.getElementById('meta').textContent = `기준 ${data.base} · ${new Date(data.at).toLocaleTimeString('ko-KR')} 갱신`;
+  document.getElementById('meta').textContent = `${data.base} 기준 · ${new Date(data.at).toLocaleTimeString('ko-KR')} 갱신`;
   document.getElementById('out').innerHTML = data.repos.map(r => {
-    if (r.error) return `<h2>${esc(r.repo)}</h2><p class="bad">조회 실패: ${esc(r.error)}</p>`;
-    const rows = r.worktrees.filter(w => (all || active(w)) && (!q || (w.path + ' ' + w.branch).toLowerCase().includes(q)))
-      .sort((a, b) => sortKey === 'name' ? a.path.localeCompare(b.path) : (b[sortKey] ?? -1) - (a[sortKey] ?? -1));
-    return `<h2>${esc(r.repo)} <span class="mute">${rows.length} / ${r.worktrees.length}</span></h2>
-      <table><tr><th data-k="name">worktree</th><th>브랜치</th><th data-k="dirty" class="num">변경</th><th data-k="ahead" class="num">앞섬</th><th data-k="behind" class="num">뒤짐</th><th data-k="lastCommit">마지막 커밋</th><th>메시지</th></tr>
-      ${rows.map(w => w.error
-        ? `<tr><td>${esc(w.path.split(/[\\/]/).pop())}</td><td>${esc(w.branch)}</td><td colspan="5" class="bad">조회 실패: ${esc(w.error)}</td></tr>`
-        : `<tr class="${w.dirty ? 'dirty' : ''}" title="${esc(w.path)}"><td>${esc(w.path.split(/[\\/]/).pop())}</td><td>${esc(w.branch ?? '(detached)')}</td>
-           <td class="num ${w.dirty ? 'warn' : ''}">${w.dirty}</td><td class="num ${w.ahead ? 'ok' : ''}">${n(w.ahead)}</td>
-           <td class="num ${w.behind > 50 ? 'warn' : ''}">${n(w.behind)}</td><td>${ago(w.lastCommit)}</td><td class="subj">${esc(w.subject)}</td></tr>`).join('')}
-      </table>`;
+    if (r.error) return `<section class="project"><h2>${esc(r.name || r.repo)}</h2><p class="bad">조회 실패: ${esc(r.error)}</p></section>`;
+    const rows = r.worktrees.filter(w => (all || active(w)) && (!q ||
+      [w.path, w.branch, w.area, w.displayName, w.task, w.issue, w.kind].join(' ').toLowerCase().includes(q)))
+      .sort((a,b) => sortKey === 'name' ? (a.displayName + a.path).localeCompare(b.displayName + b.path) : (b[sortKey] ?? -1) - (a[sortKey] ?? -1));
+    return `<section class="project"><div class="project-head"><h2 title="${esc(r.repo)}">${esc(r.name || r.repo)}</h2><span class="mute">${rows.length} / ${r.worktrees.length}개 표시 · 영역 슬롯 ${r.worktrees.filter(w => w.area).length}개</span></div>
+      ${r.metadataError ? `<p class="bad">${esc(r.metadataError)}</p>` : ''}
+      ${table(rows)}
+    </section>`;
   }).join('');
   document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { sortKey = th.dataset.k; render(); });
+  document.querySelectorAll('details[data-detail]').forEach(el => el.ontoggle = () => {
+    if (!el.isConnected) return;
+    el.open ? expanded.add(el.dataset.detail) : expanded.delete(el.dataset.detail);
+  });
 }
-
 async function load() {
-  try { data = await (await fetch('/api/state')).json(); render(); }
-  catch (e) { document.getElementById('meta').innerHTML = `<span class="bad">서버 연결 끊김</span>`; }
+  try { const response = await fetch('/api/state'); if (!response.ok) throw new Error('HTTP ' + response.status); data = await response.json(); render(); }
+  catch (e) { document.getElementById('meta').innerHTML = '<span class="bad">서버 연결 끊김</span>'; }
 }
 document.getElementById('q').oninput = render;
 document.getElementById('show').onchange = render;
-load(); setInterval(load, 30000);
+load(); setInterval(load,30000);
 </script>
 </body>
 </html>

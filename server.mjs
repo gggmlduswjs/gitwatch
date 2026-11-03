@@ -1,7 +1,7 @@
 // gitwatch — 여러 git worktree 상태를 한 화면에 보는 읽기 전용 관제판 (Windows 용).
 // 본보기: 김민태 GitWatcher(macOS, 비공개). 의존성 0 — Node 20+ 표준 라이브러리만.
 //
-//   node server.mjs C:\Users\user\Desktop\bigsix [다른 레포 ...]
+//   node server.mjs C:\path\to\repo [다른 레포 ...]
 //   → http://127.0.0.1:3810
 //
 // 읽기 전용: git 은 조회 명령(worktree list · status · rev-list · log)만 부른다. fetch 도 하지 않는다.
@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { areaLabel, jsonFile, metadata } from './metadata.mjs';
 
 const PORT = Number(process.env.GITWATCH_PORT || 3810);
 const BASE = process.env.GITWATCH_BASE || 'origin/main';
@@ -64,7 +65,27 @@ async function inspect(w) {
 
 async function state() {
   const repos = await Promise.all(REPOS.map(async repo => {
-    try { return { repo, worktrees: await Promise.all((await worktrees(repo)).map(inspect)) }; }
+    try {
+      const trees = await worktrees(repo);
+      const common = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
+      const main = trees[0]?.path || path.dirname(common);
+      const [config, registry] = await Promise.all([
+        jsonFile(path.join(main, 'harness.json')), jsonFile(path.join(common, 'harness', 'workflow.json')),
+      ]);
+      if (registry.value && (!registry.value.tasks || typeof registry.value.tasks !== 'object' ||
+          Array.isArray(registry.value.tasks))) {
+        registry.error = 'workflow.json 형식 오류';
+        registry.value = null;
+      }
+      const context = { main, config: config.value, registry: registry.value,
+        error: [config.error, registry.error].filter(Boolean).join('; ') };
+      return { repo, name: path.basename(main), metadataError: context.error || null,
+        areas: Object.entries(config.value?.workflow?.areas || {}).map(([id, area]) => ({ id, label: areaLabel(id), enabled: area.enabled !== false })),
+        worktrees: await Promise.all(trees.map(async w => {
+        const current = await inspect(w);
+        return { ...current, ...await metadata(current, context) };
+      })) };
+    }
     catch (e) { return { repo, error: String(e.message || e).split('\n')[0], worktrees: [] }; }
   }));
   return { base: BASE, at: Date.now(), repos };
